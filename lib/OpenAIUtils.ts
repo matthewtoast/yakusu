@@ -6,6 +6,7 @@ type TranslateArgs = {
   text: string;
   sl: string;
   tl: string;
+  instruction: string;
 };
 
 let cli: OpenAI | null = null;
@@ -46,7 +47,9 @@ export async function translateText(
   if (!src) return null;
   const from = cleanLang(args.sl);
   const to = cleanLang(args.tl);
-  const prompt = `Translate this text from ${from} to ${to}. Return only the translation.\n\n${src}`;
+  const extra = args.instruction.trim().slice(0, 100);
+  const guidance = extra ? `. Follow this guidance: ${extra}` : "";
+  const prompt = `Translate this text from ${from} to ${to}${guidance}. Return only the translation.\n\n${src}`;
   const res = await generateText(ai, prompt, false, MODELS, null).catch(
     (err) => {
       console.warn("translate failed", err);

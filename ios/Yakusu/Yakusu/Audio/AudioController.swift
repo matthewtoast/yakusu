@@ -40,6 +40,7 @@ struct SpeechCaptureLine: Identifiable, Equatable {
     let id: UUID
     var text: String
     var updatedAt: Date
+    var confidence: Double
 }
 
 final class SpeechCaptureEmitter: EventEmitter<SpeechCaptureEvent> {}
@@ -64,7 +65,7 @@ final class SpeechCaptureController: ObservableObject {
     }
 
     private var locale: LangLocale
-    private let config: SpeechCaptureConfig
+    private var config: SpeechCaptureConfig
     private let recognizer: SpeechRecognizer
     private let audioSession = AVAudioSession.sharedInstance()
     private var recognitionId: UUID?
@@ -80,9 +81,9 @@ final class SpeechCaptureController: ObservableObject {
     private var segmentBaselineLength = 0
     private var transcriptBuffer = ""
 
-    private lazy var handler: SpeechRecognizer.SpeechRecognitionCallback = { [weak self] transcripts, isFinal, _ in
+    private lazy var handler: SpeechRecognizer.SpeechRecognitionCallback = { [weak self] transcripts, isFinal, _, confidence in
         Task { @MainActor in
-            self?.handle(transcripts: transcripts, isFinal: isFinal)
+            self?.handle(transcripts: transcripts, isFinal: isFinal, confidence: confidence)
         }
     }
 
@@ -103,6 +104,17 @@ final class SpeechCaptureController: ObservableObject {
         }
         self.locale = locale
         stop(reason: .external)
+    }
+
+    func updateConfig(_ config: SpeechCaptureConfig) {
+        self.config = config
+        if isRecording {
+            cancelTasks()
+            segmentBaselineLength = totalCharacterCount()
+            scheduleMaxDuration()
+            scheduleAutoStop()
+            scheduleSegmentTimer()
+        }
     }
 
     func start() async {
@@ -244,7 +256,7 @@ final class SpeechCaptureController: ObservableObject {
         scheduleSegmentTimer()
     }
 
-    private func handle(transcripts: [String], isFinal: Bool) {
+    private func handle(transcripts: [String], isFinal: Bool, confidence: Double) {
         guard isRecording, let best = transcripts.first else {
             return
         }
@@ -252,7 +264,8 @@ final class SpeechCaptureController: ObservableObject {
         if shouldStartNewLine(at: now) {
             startNewLine(at: now)
         }
-        applyTranscriptDiff(best, at: now)
+        applyTranscriptDiff(best, at: now, confidence: confidence)
+        updateCurrentLineConfidence(confidence, at: now)
         lastResultDate = now
         emitTranscript()
         if exceededSegmentLimit(now: now) {
@@ -272,12 +285,12 @@ final class SpeechCaptureController: ObservableObject {
     }
 
     private func startNewLine(at date: Date) {
-        let line = SpeechCaptureLine(id: UUID(), text: "", updatedAt: date)
+        let line = SpeechCaptureLine(id: UUID(), text: "", updatedAt: date, confidence: -1)
         lines.append(line)
         currentLineId = line.id
     }
 
-    private func applyTranscriptDiff(_ text: String, at date: Date) {
+    private func applyTranscriptDiff(_ text: String, at date: Date, confidence: Double) {
         let previous = transcriptBuffer
         if text == previous {
             return
@@ -289,7 +302,7 @@ final class SpeechCaptureController: ObservableObject {
         }
         let appended = String(text.dropFirst(prefix.count))
         if !appended.isEmpty {
-            appendToCurrentLine(appended, at: date)
+            appendToCurrentLine(appended, at: date, confidence: confidence)
         }
         transcriptBuffer = text
     }
@@ -311,6 +324,9 @@ final class SpeechCaptureController: ObservableObject {
             let endIndex = line.text.index(line.text.endIndex, offsetBy: -toRemove)
             line.text = String(line.text[..<endIndex])
             line.updatedAt = date
+            if line.text.isEmpty {
+                line.confidence = -1
+            }
             lines[lastIndex] = line
             remaining -= toRemove
             if line.text.isEmpty && lines.count > 1 {
@@ -323,7 +339,7 @@ final class SpeechCaptureController: ObservableObject {
         currentLineId = lines.last?.id
     }
 
-    private func appendToCurrentLine(_ text: String, at date: Date) {
+    private func appendToCurrentLine(_ text: String, at date: Date, confidence: Double) {
         if currentLineId == nil || !lines.contains(where: { $0.id == currentLineId }) {
             startNewLine(at: date)
         }
@@ -333,6 +349,25 @@ final class SpeechCaptureController: ObservableObject {
         }
         var line = lines[index]
         line.text += text
+        line.updatedAt = date
+        if confidence >= 0 {
+            let value = min(max(confidence, 0), 1)
+            line.confidence = value
+        }
+        lines[index] = line
+    }
+
+    private func updateCurrentLineConfidence(_ confidence: Double, at date: Date) {
+        if confidence < 0 {
+            return
+        }
+        guard let id = currentLineId,
+              let index = lines.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        var line = lines[index]
+        let value = min(max(confidence, 0), 1)
+        line.confidence = value
         line.updatedAt = date
         lines[index] = line
     }
@@ -436,7 +471,8 @@ final class SpeechRecognizer: NSObject, SFSpeechRecognizerDelegate {
     typealias SpeechRecognitionCallback = (
         _ transcripts: [String],
         _ isFinal: Bool,
-        _ locale: LangLocale
+        _ locale: LangLocale,
+        _ confidence: Double
     ) -> Void
 
     static func requestAuthorization(
@@ -524,7 +560,13 @@ final class SpeechRecognizer: NSObject, SFSpeechRecognizerDelegate {
             if let result {
                 let bestString = result.bestTranscription.formattedString
                 let alternatives = result.transcriptions.map { $0.formattedString }
-                callback(Array(Set([bestString] + alternatives)), result.isFinal, ll)
+                let segmentConfidence = result.bestTranscription.segments.last?.confidence ?? -1
+                callback(
+                    Array(Set([bestString] + alternatives)),
+                    result.isFinal,
+                    ll,
+                    Double(segmentConfidence)
+                )
             }
             if error != nil || (result?.isFinal ?? false) {
                 DispatchQueue.main.async {

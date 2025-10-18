@@ -8,6 +8,7 @@ type Body = {
   text: string;
   sl: string;
   tl: string;
+  instruction: string;
 };
 
 type ResBody = {
@@ -19,7 +20,11 @@ export async function POST(req: Request) {
   const payload = await req.text();
   const body = safeJsonParseTyped<Body>(
     payload,
-    (v) => typeof v?.text === "string" && typeof v?.sl === "string" && typeof v?.tl === "string"
+    (v) =>
+      typeof v?.text === "string" &&
+      typeof v?.sl === "string" &&
+      typeof v?.tl === "string" &&
+      typeof v?.instruction === "string"
   );
   if (!body) {
     console.warn("invalid translate payload");
@@ -30,11 +35,20 @@ export async function POST(req: Request) {
     console.warn("empty translate text");
     return NextResponse.json<ResBody>({ ok: false, text: null }, { status: 400 });
   }
+  const hint = body.instruction.trim();
+  if (hint.length > 100) {
+    return NextResponse.json<ResBody>({ ok: false, text: null }, { status: 400 });
+  }
   const ai = getOpenAI();
   if (!ai) {
     return NextResponse.json<ResBody>({ ok: false, text: null }, { status: 500 });
   }
-  const res = await translateText(ai, { text: txt, sl: body.sl, tl: body.tl });
+  const res = await translateText(ai, {
+    text: txt,
+    sl: body.sl,
+    tl: body.tl,
+    instruction: hint,
+  });
   if (!res) {
     return NextResponse.json<ResBody>({ ok: false, text: null }, { status: 502 });
   }

@@ -7,8 +7,14 @@ struct TranslationService {
         client = APIClient(baseURL: baseURL, session: session, tokenProvider: tokenProvider)
     }
 
-    func translate(text: String, sl: LangLocale, tl: LangLocale) async -> String? {
-        let payload = TranslationPayload(text: text, sl: langLocaleToString(sl), tl: langLocaleToString(tl))
+    func translate(text: String, sl: LangLocale, tl: LangLocale, instruction: String) async -> String? {
+        let trimmedHint = String(instruction.prefix(100))
+        let payload = TranslationPayload(
+            text: text,
+            sl: langLocaleToString(sl),
+            tl: langLocaleToString(tl),
+            instruction: trimmedHint
+        )
         let encoder = JSONEncoder()
         guard let body = try? encoder.encode(payload) else {
             return nil
@@ -36,6 +42,7 @@ private struct TranslationPayload: Encodable {
     let text: String
     let sl: String
     let tl: String
+    let instruction: String
 }
 
 private struct TranslationResponse: Decodable {
