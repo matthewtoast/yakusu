@@ -11,7 +11,5 @@
 	</array>
 	<key>YakusuAPIBase</key>
 	<string>$(YAKUSU_API_BASE)</string>
-	<key>UILaunchStoryboardName</key>
-	<string>LaunchScreen</string>
 </dict>
 </plist>

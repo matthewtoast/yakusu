@@ -1,154 +1,83 @@
 import SwiftUI
 
 struct HomeView: View {
-    @State private var auth = AuthState()
-    @State private var search = ""
-    @State private var stories: [StoryMetaDTO] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var searchTask: Task<Void, Never>?
-    
+    @StateObject private var ctrl: SpeechCaptureController
+    private let cfg: SpeechCaptureConfig
+
+    init() {
+        let cfg = SpeechCaptureConfig(
+            lineGapMs: 1500,
+            maxDurationMs: 600000,
+            segmentDurationMs: 120000,
+            segmentCharacterLimit: 4000,
+            autoStopAfterMs: 0
+        )
+        self.cfg = cfg
+        _ctrl = StateObject(wrappedValue: SpeechCaptureController(locale: .en_us, config: cfg))
+    }
+
     var body: some View {
-        NavigationView {
-            ZStack {
-                Color.wellBackground.ignoresSafeArea()
-                List {
-                    Section {
-                        TextField("Search stories", text: $search)
-                            .padding(10)
-                            .background(Color.wellPanel)
-                            .cornerRadius(12)
-                            .textInputAutocapitalization(.never)
-                            .disableAutocorrection(true)
-                            .foregroundColor(Color.wellText)
-                            .colorScheme(.dark)
-                    }
-                    .listRowBackground(Color.wellSurface)
-                    Section(header: Text("Config").foregroundColor(Color.wellText)) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Base URL")
-                                .font(.caption)
-                                .foregroundColor(Color.wellMuted)
-                            Text(configText(AppConfig.apiBaseURL?.absoluteString))
-                                .font(.footnote)
-                                .foregroundColor(Color.wellText)
-                                .textSelection(.enabled)
-                            Text("Raw: \(configText(AppConfig.rawAPIBase))")
-                                .font(.caption2)
-                                .foregroundColor(Color.wellMuted)
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Token")
-                                .font(.caption)
-                                .foregroundColor(Color.wellMuted)
-                            Text(configText(AppConfig.devSessionToken))
-                                .font(.footnote)
-                                .foregroundColor(Color.wellText)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                            Text("Raw: \(configText(AppConfig.rawDevSessionToken))")
-                                .font(.caption2)
-                                .foregroundColor(Color.wellMuted)
-                        }
-                    }
-                    .listRowBackground(Color.wellSurface)
-                    Section(header: Text("Tools").foregroundColor(Color.wellText)) {
-                        NavigationLink(destination: SpeechTestView()) {
-                            Label("Speech Test", systemImage: "waveform")
-                                .foregroundColor(Color.wellText)
-                        }
-                    }
-                    .listRowBackground(Color.wellSurface)
-                    Section {
-                        if isLoading && stories.isEmpty {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                    .tint(Color.wellText)
-                                Spacer()
-                            }
-                        } else if let message = errorMessage {
-                            Text(message)
-                                .foregroundColor(Color.wellMuted)
-                        } else if stories.isEmpty {
-                            Text("No stories found")
-                                .foregroundColor(Color.wellMuted)
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+            VStack(spacing: 20) {
+                ScrollView {
+                    VStack(spacing: 12) {
+                        if ctrl.lines.isEmpty {
+                            Text(ctrl.isRecording ? "Listening" : "Press start to capture speech")
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 8)
                         } else {
-                            ForEach(stories) { story in
-                                NavigationLink(destination: StoryPlaybackView(storyId: story.id)) {
-                                    StoryItemView(story: story)
-                                }
-                                .buttonStyle(PlainButtonStyle())
+                            ForEach(ctrl.lines) { line in
+                                Text(lineText(line))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                                    .background(Color(.secondarySystemBackground))
+                                    .cornerRadius(12)
                             }
                         }
                     }
-                    .listRowBackground(Color.wellSurface)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical)
                 }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
+                Spacer(minLength: 16)
+                Button(action: toggle) {
+                    HStack(spacing: 12) {
+                        Image(systemName: ctrl.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                            .font(.system(size: 28, weight: .bold))
+                        Text(ctrl.isRecording ? "Stop" : "Start")
+                            .font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(ctrl.isRecording ? Color.red : Color.accentColor)
+                    .cornerRadius(16)
+                }
+                Text("Gap \(cfg.lineGapMs) ms")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
-            .navigationTitle("Stories")
+            .padding()
         }
-        .background(Color.wellBackground)
-        .tint(Color.wellText)
-        .onChange(of: search) { _ in
-            scheduleSearch()
+    }
+
+    private func lineText(_ line: SpeechCaptureLine) -> String {
+        let value = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty {
+            return "Listening"
         }
-        .task {
-            await load(query: search)
+        return value
+    }
+
+    private func toggle() {
+        if ctrl.isRecording {
+            ctrl.stop(reason: .user)
+            return
         }
-        .onDisappear {
-            searchTask?.cancel()
+        Task {
+            await ctrl.start()
         }
     }
 }
 
-private func makeStoryService(auth: AuthState) -> StoryService {
-    let client = APIClient(
-        baseURL: AppConfig.apiBaseURL!,
-        tokenProvider: { auth.token }
-    )
-    return StoryService(client: client)
-}
-
-private func trimmedQuery(_ value: String) -> String {
-    value.trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
-extension HomeView {
-    private func configText(_ value: String?) -> String {
-        value ?? "(missing)"
-    }
-
-    private func scheduleSearch() {
-        searchTask?.cancel()
-        let query = search
-        searchTask = Task {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            if Task.isCancelled { return }
-            await load(query: query)
-        }
-    }
-
-    @MainActor
-    private func load(query: String) async {
-        isLoading = true
-        errorMessage = nil
-        let normalized = trimmedQuery(query)
-        let service = makeStoryService(auth: auth)
-        defer { isLoading = false }
-        do {
-            let items = try await service.search(query: normalized.isEmpty ? nil : normalized)
-            if Task.isCancelled { return }
-            stories = items
-        } catch {
-            if Task.isCancelled { return }
-            errorMessage = "Unable to load stories"
-        }
-    }
-}
-
-#Preview {
-    HomeView()
-}
