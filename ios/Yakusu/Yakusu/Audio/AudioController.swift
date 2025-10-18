@@ -63,7 +63,7 @@ final class SpeechCaptureController: ObservableObject {
         lastStopWord
     }
 
-    private let locale: LangLocale
+    private var locale: LangLocale
     private let config: SpeechCaptureConfig
     private let recognizer: SpeechRecognizer
     private let audioSession = AVAudioSession.sharedInstance()
@@ -95,6 +95,14 @@ final class SpeechCaptureController: ObservableObject {
                 self?.stop(reason: .external)
             }
         }
+    }
+
+    func setLocale(_ locale: LangLocale) {
+        if locale == self.locale {
+            return
+        }
+        self.locale = locale
+        stop(reason: .external)
     }
 
     func start() async {

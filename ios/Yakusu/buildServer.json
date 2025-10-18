@@ -12,8 +12,8 @@
 	"argv": [
 		"/opt/homebrew/bin/xcode-build-server"
 	],
-	"workspace": "/Users/matthew/Code/Aisatsu/yakusu/ios/Yakusu/Yakusu.xcodeproj/project.xcworkspace",
-	"build_root": "/Users/matthew/Library/Developer/Xcode/DerivedData/Yakusu-acusyhfsnugkkwaliwococtyxfqp",
+	"workspace": "/Users/matthew/Code/Personal/yakusu/ios/Yakusu/Yakusu.xcodeproj/project.xcworkspace",
+	"build_root": "/Users/matthew/Library/Developer/Xcode/DerivedData/Yakusu-abasmoqeeabxmjafwxynlaofgwpc",
 	"scheme": "Yakusu",
 	"kind": "xcode"
 }
