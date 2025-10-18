@@ -1,0 +1,19 @@
+{
+	"name": "xcode build server",
+	"version": "0.2",
+	"bspVersion": "2.0",
+	"languages": [
+		"c",
+		"cpp",
+		"objective-c",
+		"objective-cpp",
+		"swift"
+	],
+	"argv": [
+		"/opt/homebrew/bin/xcode-build-server"
+	],
+	"workspace": "/Users/matthew/Code/Aisatsu/yakusu/ios/Yakusu/Yakusu.xcodeproj/project.xcworkspace",
+	"build_root": "/Users/matthew/Library/Developer/Xcode/DerivedData/Yakusu-acusyhfsnugkkwaliwococtyxfqp",
+	"scheme": "Yakusu",
+	"kind": "xcode"
+}
