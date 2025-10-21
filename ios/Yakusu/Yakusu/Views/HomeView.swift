@@ -170,23 +170,29 @@ struct HomeView: View {
                                     .padding(.vertical, 8)
                             } else {
                                 ForEach(ctrl.lines) { line in
+                                    let pending = pendingIds.contains(line.id)
+                                    let translation = translations[line.id]?.value ?? ""
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text(displayText(line))
                                             .font(.system(size: 18 * settings.fontScale))
                                             .frame(maxWidth: .infinity, alignment: .leading)
-                                        if let tr = translations[line.id], !tr.value.isEmpty {
-                                            Text(tr.value)
+                                        if !translation.isEmpty {
+                                            Text(translation)
                                                 .font(.system(size: 17 * settings.fontScale))
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                                 .foregroundColor(.accentColor)
-                                        } else if pendingIds.contains(line.id) {
-                                            PulseDots()
-                                                .frame(maxWidth: .infinity, alignment: .leading)
                                         }
                                     }
                                     .padding(12)
                                     .background(Color(.secondarySystemBackground))
                                     .cornerRadius(12)
+                                    .overlay(alignment: .topTrailing) {
+                                        if pending {
+                                            PulseDots()
+                                                .frame(width: 20)
+                                                .padding(12)
+                                        }
+                                    }
                                     .id(line.id)
                                 }
                             }
@@ -244,7 +250,6 @@ struct HomeView: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: .infinity)
                 }
-                Spacer(minLength: 16)
                 Button(action: toggle) {
                     HStack(spacing: 12) {
                         Image(systemName: ctrl.isRecording ? "stop.circle.fill" : "mic.circle.fill")
@@ -254,10 +259,11 @@ struct HomeView: View {
                     }
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
+                    .padding(.vertical, 12)
                     .background(ctrl.isRecording ? Color.red : Color.accentColor)
                     .cornerRadius(16)
                 }
+                .padding(.top, 0)
             }
             .padding()
         }
@@ -365,9 +371,6 @@ struct HomeView: View {
                 translations[id] = nil
                 continue
             }
-            if let entry = translations[id], entry.text != text {
-                translations[id] = nil
-            }
             rows.append((id, text))
         }
         if rows.isEmpty {
@@ -437,7 +440,7 @@ struct HomeView: View {
                         let id = request.ids[index]
                         let source = request.texts[index]
                         let latest = trimmed(id: id)
-                        if latest != source {
+                        if latest.isEmpty || !latest.hasPrefix(source) {
                             continue
                         }
                         let translated = output[index].trimmingCharacters(in: .whitespacesAndNewlines)

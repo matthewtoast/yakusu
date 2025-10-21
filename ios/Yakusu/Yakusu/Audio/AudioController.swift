@@ -268,9 +268,11 @@ final class SpeechCaptureController: ObservableObject {
             startNewLine(at: now)
         }
         let merged = mergedTranscript(base: segmentTranscriptBase, text: best)
-        applyTranscriptDiff(merged, at: now, confidence: confidence)
+        let changed = applyTranscriptDiff(merged, at: now, confidence: confidence)
         updateCurrentLineConfidence(confidence, at: now)
-        lastResultDate = now
+        if changed {
+            lastResultDate = now
+        }
         emitTranscript()
         if exceededSegmentLimit(now: now) {
             restartSegment()
@@ -294,10 +296,10 @@ final class SpeechCaptureController: ObservableObject {
         currentLineId = line.id
     }
 
-    private func applyTranscriptDiff(_ text: String, at date: Date, confidence: Double) {
+    private func applyTranscriptDiff(_ text: String, at date: Date, confidence: Double) -> Bool {
         let previous = transcriptBuffer
         if text == previous {
-            return
+            return false
         }
         let prefix = previous.commonPrefix(with: text)
         let removed = previous.count - prefix.count
@@ -309,6 +311,7 @@ final class SpeechCaptureController: ObservableObject {
             appendToCurrentLine(appended, at: date, confidence: confidence)
         }
         transcriptBuffer = text
+        return true
     }
 
     private func mergedTranscript(base: String, text: String) -> String {
