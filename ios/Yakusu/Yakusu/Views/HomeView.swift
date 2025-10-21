@@ -195,18 +195,23 @@ struct HomeView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical)
+                        .padding(.bottom, 16)
                     }
                     .onChange(of: ctrl.lines) { lines in
                         guard let last = lines.last else {
                             return
                         }
-                        withAnimation {
-                            proxy.scrollTo(last.id, anchor: .bottom)
+                        DispatchQueue.main.async {
+                            withAnimation {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
                         }
                     }
                     .onAppear {
                         if let last = ctrl.lines.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
+                            DispatchQueue.main.async {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
                         }
                     }
                 }
