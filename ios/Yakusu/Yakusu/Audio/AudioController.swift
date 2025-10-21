@@ -80,6 +80,7 @@ final class SpeechCaptureController: ObservableObject {
     private var segmentTimerTask: Task<Void, Never>?
     private var segmentBaselineLength = 0
     private var transcriptBuffer = ""
+    private var segmentTranscriptBase = ""
 
     private lazy var handler: SpeechRecognizer.SpeechRecognitionCallback = { [weak self] transcripts, isFinal, _, confidence in
         Task { @MainActor in
@@ -191,14 +192,14 @@ final class SpeechCaptureController: ObservableObject {
     }
 
     private func clearState(keepLines: Bool) {
+        let base = keepLines ? accumulatedText : ""
         if !keepLines {
             lines = []
             lastStopReason = nil
             lastStopWord = nil
-            transcriptBuffer = ""
-        } else {
-            transcriptBuffer = accumulatedText
         }
+        transcriptBuffer = base
+        segmentTranscriptBase = base
         recognitionId = nil
         sessionStart = nil
         segmentStart = nil
@@ -249,6 +250,8 @@ final class SpeechCaptureController: ObservableObject {
         }
         segmentStart = Date()
         segmentBaselineLength = totalCharacterCount()
+        segmentTranscriptBase = accumulatedText
+        transcriptBuffer = segmentTranscriptBase
         if lines.isEmpty {
             startNewLine(at: Date())
         }
@@ -264,7 +267,8 @@ final class SpeechCaptureController: ObservableObject {
         if shouldStartNewLine(at: now) {
             startNewLine(at: now)
         }
-        applyTranscriptDiff(best, at: now, confidence: confidence)
+        let merged = mergedTranscript(base: segmentTranscriptBase, text: best)
+        applyTranscriptDiff(merged, at: now, confidence: confidence)
         updateCurrentLineConfidence(confidence, at: now)
         lastResultDate = now
         emitTranscript()
@@ -305,6 +309,25 @@ final class SpeechCaptureController: ObservableObject {
             appendToCurrentLine(appended, at: date, confidence: confidence)
         }
         transcriptBuffer = text
+    }
+
+    private func mergedTranscript(base: String, text: String) -> String {
+        if base.isEmpty {
+            return text
+        }
+        if text.isEmpty {
+            return base
+        }
+        var overlap = min(base.count, text.count)
+        while overlap > 0 {
+            let baseIndex = base.index(base.endIndex, offsetBy: -overlap)
+            let textIndex = text.index(text.startIndex, offsetBy: overlap)
+            if base[baseIndex...] == text[..<textIndex] {
+                return base + text[textIndex...]
+            }
+            overlap -= 1
+        }
+        return base + text
     }
 
     private func removeCharactersFromLines(_ count: Int, at date: Date) {

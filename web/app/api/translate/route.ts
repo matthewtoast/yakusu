@@ -19,10 +19,10 @@ type ResBody = {
 };
 
 const MODELS: NonEmpty<(typeof LLM_SLUGS)[number]> = [
-  "openai/gpt-5-nano",
-  "openai/gpt-5-mini",
   "openai/gpt-4.1-mini",
   "openai/gpt-4.1-nano",
+  "openai/gpt-5-nano",
+  "openai/gpt-5-mini",
 ];
 
 export async function POST(req: Request) {
