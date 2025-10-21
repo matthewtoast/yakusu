@@ -99,6 +99,17 @@ private struct TranscriptAssembler {
         }
         return TranscriptAssemblerResult(final: final, live: live, changed: changed)
     }
+
+    mutating func finalize(timestamp: Date) -> String? {
+        if live.isEmpty {
+            return nil
+        }
+        let value = live
+        stable = raw.count
+        live = ""
+        lastChange = timestamp
+        return value
+    }
 }
 
 private struct TranscriptStore {
@@ -202,9 +213,11 @@ final class SpeechCaptureController: ObservableObject {
     private var maxDurationTask: Task<Void, Never>?
     private var autoStopTask: Task<Void, Never>?
     private var segmentTimerTask: Task<Void, Never>?
+    private var idleFlushTask: Task<Void, Never>?
     private var segmentBaselineLength = 0
     private var assembler = TranscriptAssembler()
     private var store = TranscriptStore()
+    private var lastConfidence: Double = -1
 
     private lazy var handler: SpeechRecognizer.SpeechRecognitionCallback = { [weak self] transcripts, isFinal, _, confidence in
         Task { @MainActor in
@@ -327,6 +340,9 @@ final class SpeechCaptureController: ObservableObject {
         recognitionId = nil
         segmentStart = nil
         segmentBaselineLength = totalCharacterCount()
+        idleFlushTask?.cancel()
+        idleFlushTask = nil
+        lastConfidence = -1
     }
 
     private func ensurePermissions() async -> Bool {
@@ -382,8 +398,12 @@ final class SpeechCaptureController: ObservableObject {
         if let final = result.final {
             store.finalizeLive(final, confidence: confidence, date: now)
             changed = true
+            idleFlushTask?.cancel()
+            idleFlushTask = nil
         }
         store.setLive(result.live, confidence: confidence, date: now)
+        lastConfidence = confidence
+        scheduleIdleFlush()
         if lines != store.lines {
             syncLines()
             changed = true
@@ -396,6 +416,41 @@ final class SpeechCaptureController: ObservableObject {
         }
         if isFinal {
             stop(reason: .autoStop)
+        }
+    }
+
+    private func finalizeIdleIfNeeded(timestamp: Date) {
+        guard let final = assembler.finalize(timestamp: timestamp) else {
+            return
+        }
+        store.finalizeLive(final, confidence: lastConfidence, date: timestamp)
+        syncLines()
+        emitTranscript()
+        idleFlushTask = nil
+    }
+
+    private func scheduleIdleFlush() {
+        idleFlushTask?.cancel()
+        guard config.lineGapMs > 0, !assembler.live.isEmpty else {
+            idleFlushTask = nil
+            return
+        }
+        let delay = UInt64(config.lineGapMs) * 1_000_000
+        idleFlushTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            await MainActor.run {
+                guard let self, self.isRecording else {
+                    return
+                }
+                self.finalizeIdleIfNeeded(timestamp: Date())
+            }
         }
     }
 

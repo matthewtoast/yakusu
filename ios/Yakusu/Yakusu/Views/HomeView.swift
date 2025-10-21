@@ -436,15 +436,14 @@ struct HomeView: View {
                    tl == request.tl,
                    String(settings.instruction.prefix(100)) == request.instruction,
                    !output.isEmpty,
-                   output.count == request.ids.count {
-                    for index in 0..<request.ids.count {
-                        let id = request.ids[index]
-                        let source = request.texts[index]
-                        let latest = trimmed(id: id)
-                        if latest.isEmpty || !latest.hasPrefix(source) {
-                            continue
-                        }
-                        let translated = output[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                   output.count == request.ids.count,
+                   request.ids.last != nil {
+                    let lastIndex = request.ids.count - 1
+                    let id = request.ids[lastIndex]
+                    let source = request.texts[lastIndex]
+                    let latest = trimmed(id: id)
+                    if !latest.isEmpty, latest.hasPrefix(source) {
+                        let translated = output[lastIndex].trimmingCharacters(in: .whitespacesAndNewlines)
                         if translated.isEmpty {
                             translations[id] = nil
                         } else {
