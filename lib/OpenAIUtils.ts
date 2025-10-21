@@ -14,13 +14,6 @@ type TranslateArgs = {
 
 let cli: OpenAI | null = null;
 
-const MODELS: NonEmpty<(typeof LLM_SLUGS)[number]> = [
-  "openai/gpt-5-mini",
-  "openai/gpt-5-nano",
-  "openai/gpt-4.1-mini",
-  "openai/gpt-4.1-nano",
-];
-
 const env = loadSstEnv();
 
 export function getOpenAI(): OpenAI | null {
@@ -51,7 +44,8 @@ const cleanLang = (code: string) => {
 
 export async function translateText(
   ai: OpenAI,
-  args: TranslateArgs
+  args: TranslateArgs,
+  models: NonEmpty<(typeof LLM_SLUGS)[number]>
 ): Promise<string[] | null> {
   const src = args.lines
     .map((line) => line.trim())
@@ -68,7 +62,7 @@ export async function translateText(
     Return only JSON:
   `.trim();
   const prompt = `${header}\n${format}\n<input>${JSON.stringify(src)}</input>`;
-  const res = await generateText(ai, prompt, false, MODELS, null).catch(
+  const res = await generateText(ai, prompt, false, models, null).catch(
     (err) => {
       console.error("translate failed", err);
       return null;

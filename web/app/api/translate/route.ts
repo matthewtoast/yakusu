@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { safeJsonParseTyped } from "../../../../lib/JSONHelpers";
 import { getOpenAI, translateText } from "../../../../lib/OpenAIUtils";
+import { LLM_SLUGS } from "../../../../lib/OpenRouterUtils";
+import { NonEmpty } from "../../../../typings";
 
 export const runtime = "nodejs";
 
@@ -15,6 +17,13 @@ type ResBody = {
   ok: boolean;
   lines: string[];
 };
+
+const MODELS: NonEmpty<(typeof LLM_SLUGS)[number]> = [
+  "openai/gpt-5-nano",
+  "openai/gpt-5-mini",
+  "openai/gpt-4.1-mini",
+  "openai/gpt-4.1-nano",
+];
 
 export async function POST(req: Request) {
   const payload = await req.text();
@@ -59,12 +68,16 @@ export async function POST(req: Request) {
     );
   }
   console.info("request ::", body.sl, body.tl, src);
-  const res = await translateText(ai, {
-    lines: src,
-    sl: body.sl,
-    tl: body.tl,
-    instruction: hint,
-  });
+  const res = await translateText(
+    ai,
+    {
+      lines: src,
+      sl: body.sl,
+      tl: body.tl,
+      instruction: hint,
+    },
+    MODELS
+  );
   console.info("response ::", res);
   if (!res) {
     return NextResponse.json<ResBody>(
