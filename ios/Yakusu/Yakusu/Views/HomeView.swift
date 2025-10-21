@@ -28,44 +28,6 @@ private struct PulseDots: View {
     }
 }
 
-private struct SignalBadge: View {
-    let value: Double
-
-    var body: some View {
-        if value < 0 {
-            EmptyView()
-        } else {
-            Text(label)
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(color.opacity(0.15))
-                .foregroundColor(color)
-                .clipShape(Capsule())
-        }
-    }
-
-    private var label: String {
-        if value >= 0.66 {
-            return "High"
-        }
-        if value >= 0.33 {
-            return "Med"
-        }
-        return "Low"
-    }
-
-    private var color: Color {
-        if value >= 0.66 {
-            return .green
-        }
-        if value >= 0.33 {
-            return .orange
-        }
-        return .red
-    }
-}
-
 private struct HomeSettings: Equatable {
     var fontScale: Double
     var instruction: String
@@ -128,16 +90,27 @@ private struct LineTranslation: Equatable {
     let value: String
 }
 
+private struct TranslationRequest: Equatable {
+    let ids: [UUID]
+    let texts: [String]
+    let sl: LangLocale
+    let tl: LangLocale
+    let instruction: String
+}
+
 struct HomeView: View {
     @StateObject private var ctrl: SpeechCaptureController
     @State private var sl: LangLocale
     @State private var tl: LangLocale
     @State private var translations: [UUID: LineTranslation]
-    @State private var inFlight: [UUID: String]
-    @State private var waiters: [UUID: Task<Void, Never>]
+    @State private var pendingIds: Set<UUID> = []
+    @State private var activeRequest: TranslationRequest?
+    @State private var queuedRequest: TranslationRequest?
+    @State private var activeToken: UUID?
     @State private var settings: HomeSettings
     @State private var showSettings: Bool
     private let translator: TranslationService?
+    private let translationWindow = 3
 
     init() {
         let initialSL: LangLocale = .ja_jp
@@ -154,8 +127,6 @@ struct HomeView: View {
         _sl = State(initialValue: initialSL)
         _tl = State(initialValue: initialTL)
         _translations = State(initialValue: [:])
-        _inFlight = State(initialValue: [:])
-        _waiters = State(initialValue: [:])
         _settings = State(initialValue: defaults)
         _showSettings = State(initialValue: false)
         if let base = AppConfig.apiBaseURL {
@@ -189,40 +160,53 @@ struct HomeView: View {
                             .clipShape(Circle())
                     }
                 }
-                ScrollView {
-                    VStack(spacing: 12) {
-                        if ctrl.lines.isEmpty {
-                            Text(ctrl.isRecording ? "Listening" : "Press start to capture speech")
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 8)
-                        } else {
-                            ForEach(ctrl.lines) { line in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(alignment: .top, spacing: 8) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 12) {
+                            if ctrl.lines.isEmpty {
+                                Text(ctrl.isRecording ? "Listening" : "Press start to capture speech")
+                                    .foregroundColor(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 8)
+                            } else {
+                                ForEach(ctrl.lines) { line in
+                                    VStack(alignment: .leading, spacing: 8) {
                                         Text(displayText(line))
                                             .font(.system(size: 18 * settings.fontScale))
                                             .frame(maxWidth: .infinity, alignment: .leading)
-                                        SignalBadge(value: line.confidence)
+                                        if let tr = translations[line.id], !tr.value.isEmpty {
+                                            Text(tr.value)
+                                                .font(.system(size: 17 * settings.fontScale))
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .foregroundColor(.accentColor)
+                                        } else if pendingIds.contains(line.id) {
+                                            PulseDots()
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
                                     }
-                                    if let tr = translations[line.id], !tr.value.isEmpty {
-                                        Text(tr.value)
-                                            .font(.system(size: 17 * settings.fontScale))
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .foregroundColor(.accentColor)
-                                    } else if inFlight[line.id] != nil {
-                                        PulseDots()
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
+                                    .padding(12)
+                                    .background(Color(.secondarySystemBackground))
+                                    .cornerRadius(12)
+                                    .id(line.id)
                                 }
-                                .padding(12)
-                                .background(Color(.secondarySystemBackground))
-                                .cornerRadius(12)
                             }
                         }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical)
+                    }
+                    .onChange(of: ctrl.lines) { lines in
+                        guard let last = lines.last else {
+                            return
+                        }
+                        withAnimation {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                    .onAppear {
+                        if let last = ctrl.lines.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
                 }
                 HStack(spacing: 12) {
                     Picker(selection: $sl) {
@@ -359,16 +343,10 @@ struct HomeView: View {
 
     @MainActor private func resetTranslations() {
         translations = [:]
-        inFlight = [:]
-        let keys = Array(waiters.keys)
-        for key in keys {
-            cancelWaiter(key)
-        }
-    }
-
-    @MainActor private func cancelWaiter(_ id: UUID) {
-        waiters[id]?.cancel()
-        waiters[id] = nil
+        pendingIds = []
+        activeRequest = nil
+        queuedRequest = nil
+        activeToken = nil
     }
 
     @MainActor private func updateTranslations() {
@@ -379,102 +357,108 @@ struct HomeView: View {
             return
         }
         let hint = String(settings.instruction.prefix(100))
+        var rows: [(UUID, String)] = []
         for line in ctrl.lines {
             let id = line.id
             let text = trimmed(line)
             if text.isEmpty {
                 translations[id] = nil
-                inFlight[id] = nil
-                cancelWaiter(id)
                 continue
             }
-            if let entry = translations[id], entry.text == text {
+            if let entry = translations[id], entry.text != text {
+                translations[id] = nil
+            }
+            rows.append((id, text))
+        }
+        if rows.isEmpty {
+            pendingIds = []
+            return
+        }
+        let subset = Array(rows.suffix(translationWindow))
+        var needsWork = false
+        for entry in subset {
+            if let existing = translations[entry.0], existing.text == entry.1, !existing.value.isEmpty {
                 continue
             }
-            if inFlight[id] == text {
-                continue
-            }
-            scheduleTranslation(for: id, text: text, service: service, instruction: hint)
+            needsWork = true
+            break
+        }
+        if !needsWork {
+            return
+        }
+        let request = TranslationRequest(
+            ids: subset.map { $0.0 },
+            texts: subset.map { $0.1 },
+            sl: sl,
+            tl: tl,
+            instruction: hint
+        )
+        if let active = activeRequest, active == request {
+            return
+        }
+        if let queued = queuedRequest, queued == request {
+            return
+        }
+        if activeToken == nil {
+            startTranslation(request, service: service)
+        } else {
+            queuedRequest = request
+            pendingIds.formUnion(request.ids)
         }
     }
 
-    @MainActor private func scheduleTranslation(for id: UUID, text: String, service: TranslationService, instruction: String) {
-        cancelWaiter(id)
-        let task = Task {
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            if Task.isCancelled {
-                return
-            }
-            let snapshot = await MainActor.run { () -> (TranslationService, String, LangLocale, LangLocale, String)? in
-                guard ctrl.lines.contains(where: { $0.id == id }) else {
-                    return nil
-                }
-                return (service, trimmed(id: id), sl, tl, instruction)
-            }
-            guard let (service, latest, source, target, hint) = snapshot else {
-                await MainActor.run {
-                    inFlight[id] = nil
-                    cancelWaiter(id)
-                    translations[id] = nil
-                }
-                return
-            }
-            if latest.isEmpty {
-                await MainActor.run {
-                    inFlight[id] = nil
-                    cancelWaiter(id)
-                    translations[id] = nil
-                }
-                return
-            }
-            if latest != text {
-                await MainActor.run {
-                    cancelWaiter(id)
-                }
-                return
-            }
+    @MainActor private func startTranslation(_ request: TranslationRequest, service: TranslationService) {
+        let token = UUID()
+        activeToken = token
+        activeRequest = request
+        pendingIds = Set(request.ids)
+        Task {
+            let result = await service.translate(
+                lines: request.texts,
+                sl: request.sl,
+                tl: request.tl,
+                instruction: request.instruction
+            )
             await MainActor.run {
-                waiters[id] = nil
-                inFlight[id] = text
-            }
-            let result = await service.translate(text: text, sl: source, tl: target, instruction: hint)
-            if Task.isCancelled {
-                return
-            }
-            await MainActor.run {
-                inFlight[id] = nil
-                guard ctrl.lines.contains(where: { $0.id == id }) else {
-                    translations[id] = nil
+                guard activeToken == token else {
                     return
                 }
-                if translator == nil || sl != source || tl != target || settings.instruction != hint {
-                    return
-                }
-                let latestValue = trimmed(id: id)
-                if latestValue != text {
-                    translations[id] = nil
-                    Task { @MainActor in
-                        updateTranslations()
+                activeToken = nil
+                activeRequest = nil
+                pendingIds = []
+                if let output = result,
+                   translator != nil,
+                   sl == request.sl,
+                   tl == request.tl,
+                   String(settings.instruction.prefix(100)) == request.instruction,
+                   !output.isEmpty,
+                   output.count == request.ids.count {
+                    for index in 0..<request.ids.count {
+                        let id = request.ids[index]
+                        let source = request.texts[index]
+                        let latest = trimmed(id: id)
+                        if latest != source {
+                            continue
+                        }
+                        let translated = output[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if translated.isEmpty {
+                            translations[id] = nil
+                        } else {
+                            translations[id] = LineTranslation(text: source, value: translated)
+                        }
                     }
-                    return
                 }
-                guard let value = result else {
-                    translations[id] = nil
-                    return
+                let next = queuedRequest
+                queuedRequest = nil
+                if let next, let svc = translator, sl != tl {
+                    startTranslation(next, service: svc)
                 }
-                translations[id] = LineTranslation(text: text, value: value)
             }
         }
-        waiters[id] = task
     }
 
     @MainActor private func pruneTranslations(_ ids: Set<UUID>) {
         translations = translations.filter { ids.contains($0.key) }
-        inFlight = inFlight.filter { ids.contains($0.key) }
-        let stale = waiters.keys.filter { !ids.contains($0) }
-        for id in stale {
-            cancelWaiter(id)
-        }
     }
 
     @MainActor private func swapLanguages() {
