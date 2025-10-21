@@ -41,11 +41,138 @@ struct SpeechCaptureLine: Identifiable, Equatable {
     var text: String
     var updatedAt: Date
     var confidence: Double
+    var isFinal: Bool
+}
+
+private struct TranscriptAssemblerResult: Equatable {
+    let final: String?
+    let live: String
+    let changed: Bool
+}
+
+private struct TranscriptAssembler {
+    var raw = ""
+    var stable = 0
+    var live = ""
+    var lastChange: Date?
+
+    mutating func reset(with text: String) {
+        raw = text
+        stable = text.count
+        live = ""
+        lastChange = nil
+    }
+
+    mutating func update(_ text: String, isFinal: Bool, timestamp: Date, gapMs: Int) -> TranscriptAssemblerResult {
+        let value = text
+        if stable > value.count {
+            stable = value.count
+        }
+        let start = value.index(value.startIndex, offsetBy: stable)
+        let suffix = String(value[start...])
+        var changed = false
+        if suffix != live {
+            live = suffix
+            lastChange = timestamp
+            changed = true
+        }
+        raw = value
+        var final: String?
+        let idle: Double
+        if let last = lastChange {
+            idle = timestamp.timeIntervalSince(last) * 1000
+        } else {
+            idle = 0
+        }
+        if isFinal && !live.isEmpty {
+            final = live
+            stable = value.count
+            live = ""
+            lastChange = timestamp
+            changed = true
+        } else if gapMs > 0, !changed, idle >= Double(gapMs), !live.isEmpty {
+            final = live
+            stable = value.count
+            live = ""
+            lastChange = timestamp
+            changed = true
+        }
+        return TranscriptAssemblerResult(final: final, live: live, changed: changed)
+    }
+}
+
+private struct TranscriptStore {
+    private(set) var lines: [SpeechCaptureLine] = []
+
+    var text: String {
+        lines.map { $0.text }.joined(separator: "\n")
+    }
+
+    mutating func reset(keep: Bool) {
+        if keep {
+            lines = lines.map { line in
+                var item = line
+                item.isFinal = true
+                return item
+            }
+        } else {
+            lines = []
+        }
+    }
+
+    mutating func setLive(_ text: String, confidence: Double, date: Date) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            removeLive()
+            return
+        }
+        if let idx = lines.lastIndex(where: { !$0.isFinal }) {
+            var line = lines[idx]
+            line.text = trimmed
+            line.updatedAt = date
+            if confidence >= 0 {
+                line.confidence = confidence
+            }
+            lines[idx] = line
+        } else {
+            let line = SpeechCaptureLine(id: UUID(), text: trimmed, updatedAt: date, confidence: confidence, isFinal: false)
+            lines.append(line)
+        }
+    }
+
+    mutating func finalizeLive(_ text: String, confidence: Double, date: Date) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            removeLive()
+            return
+        }
+        if let idx = lines.lastIndex(where: { !$0.isFinal }) {
+            var line = lines[idx]
+            line.text = trimmed
+            line.updatedAt = date
+            if confidence >= 0 {
+                line.confidence = confidence
+            }
+            line.isFinal = true
+            lines[idx] = line
+        } else {
+            let value = confidence >= 0 ? confidence : -1
+            let line = SpeechCaptureLine(id: UUID(), text: trimmed, updatedAt: date, confidence: value, isFinal: true)
+            lines.append(line)
+        }
+    }
+
+    mutating func removeLive() {
+        if let idx = lines.lastIndex(where: { !$0.isFinal }) {
+            lines.remove(at: idx)
+        }
+    }
 }
 
 final class SpeechCaptureEmitter: EventEmitter<SpeechCaptureEvent> {}
 
 @MainActor
+
 final class SpeechCaptureController: ObservableObject {
     @Published private(set) var lines: [SpeechCaptureLine] = []
     @Published private(set) var isRecording = false
@@ -53,7 +180,7 @@ final class SpeechCaptureController: ObservableObject {
     let emitter = SpeechCaptureEmitter()
 
     var accumulatedText: String {
-        lines.map { $0.text }.joined(separator: "\n")
+        store.text
     }
 
     var stopReason: SpeechCaptureStopReason? {
@@ -69,18 +196,15 @@ final class SpeechCaptureController: ObservableObject {
     private let recognizer: SpeechRecognizer
     private let audioSession = AVAudioSession.sharedInstance()
     private var recognitionId: UUID?
-    private var sessionStart: Date?
     private var segmentStart: Date?
-    private var lastResultDate: Date?
-    private var currentLineId: UUID?
     private var lastStopReason: SpeechCaptureStopReason?
     private var lastStopWord: String?
     private var maxDurationTask: Task<Void, Never>?
     private var autoStopTask: Task<Void, Never>?
     private var segmentTimerTask: Task<Void, Never>?
     private var segmentBaselineLength = 0
-    private var transcriptBuffer = ""
-    private var segmentTranscriptBase = ""
+    private var assembler = TranscriptAssembler()
+    private var store = TranscriptStore()
 
     private lazy var handler: SpeechRecognizer.SpeechRecognitionCallback = { [weak self] transcripts, isFinal, _, confidence in
         Task { @MainActor in
@@ -192,20 +316,17 @@ final class SpeechCaptureController: ObservableObject {
     }
 
     private func clearState(keepLines: Bool) {
-        let base = keepLines ? accumulatedText : ""
+        let base = keepLines ? store.text : ""
+        store.reset(keep: keepLines)
+        assembler.reset(with: base)
+        syncLines()
         if !keepLines {
-            lines = []
             lastStopReason = nil
             lastStopWord = nil
         }
-        transcriptBuffer = base
-        segmentTranscriptBase = base
         recognitionId = nil
-        sessionStart = nil
         segmentStart = nil
-        lastResultDate = nil
-        currentLineId = nil
-        segmentBaselineLength = 0
+        segmentBaselineLength = totalCharacterCount()
     }
 
     private func ensurePermissions() async -> Bool {
@@ -245,16 +366,8 @@ final class SpeechCaptureController: ObservableObject {
     }
 
     private func startSegment() throws {
-        if recognitionId == nil {
-            sessionStart = Date()
-        }
         segmentStart = Date()
         segmentBaselineLength = totalCharacterCount()
-        segmentTranscriptBase = accumulatedText
-        transcriptBuffer = segmentTranscriptBase
-        if lines.isEmpty {
-            startNewLine(at: Date())
-        }
         recognitionId = try recognizer.startContinuous(locale, callback: handler)
         scheduleSegmentTimer()
     }
@@ -264,16 +377,20 @@ final class SpeechCaptureController: ObservableObject {
             return
         }
         let now = Date()
-        if shouldStartNewLine(at: now) {
-            startNewLine(at: now)
+        let result = assembler.update(best, isFinal: isFinal, timestamp: now, gapMs: config.lineGapMs)
+        var changed = false
+        if let final = result.final {
+            store.finalizeLive(final, confidence: confidence, date: now)
+            changed = true
         }
-        let merged = mergedTranscript(base: segmentTranscriptBase, text: best)
-        let changed = applyTranscriptDiff(merged, at: now, confidence: confidence)
-        updateCurrentLineConfidence(confidence, at: now)
-        if changed {
-            lastResultDate = now
+        store.setLive(result.live, confidence: confidence, date: now)
+        if lines != store.lines {
+            syncLines()
+            changed = true
         }
-        emitTranscript()
+        if changed || result.changed {
+            emitTranscript()
+        }
         if exceededSegmentLimit(now: now) {
             restartSegment()
         }
@@ -282,120 +399,8 @@ final class SpeechCaptureController: ObservableObject {
         }
     }
 
-    private func shouldStartNewLine(at date: Date) -> Bool {
-        guard let last = lastResultDate else {
-            return lines.isEmpty
-        }
-        let delta = date.timeIntervalSince(last) * 1000
-        return delta >= Double(config.lineGapMs)
-    }
-
-    private func startNewLine(at date: Date) {
-        let line = SpeechCaptureLine(id: UUID(), text: "", updatedAt: date, confidence: -1)
-        lines.append(line)
-        currentLineId = line.id
-    }
-
-    private func applyTranscriptDiff(_ text: String, at date: Date, confidence: Double) -> Bool {
-        let previous = transcriptBuffer
-        if text == previous {
-            return false
-        }
-        let prefix = previous.commonPrefix(with: text)
-        let removed = previous.count - prefix.count
-        if removed > 0 {
-            removeCharactersFromLines(removed, at: date)
-        }
-        let appended = String(text.dropFirst(prefix.count))
-        if !appended.isEmpty {
-            appendToCurrentLine(appended, at: date, confidence: confidence)
-        }
-        transcriptBuffer = text
-        return true
-    }
-
-    private func mergedTranscript(base: String, text: String) -> String {
-        if base.isEmpty {
-            return text
-        }
-        if text.isEmpty {
-            return base
-        }
-        var overlap = min(base.count, text.count)
-        while overlap > 0 {
-            let baseIndex = base.index(base.endIndex, offsetBy: -overlap)
-            let textIndex = text.index(text.startIndex, offsetBy: overlap)
-            if base[baseIndex...] == text[..<textIndex] {
-                return base + text[textIndex...]
-            }
-            overlap -= 1
-        }
-        return base + text
-    }
-
-    private func removeCharactersFromLines(_ count: Int, at date: Date) {
-        var remaining = count
-        while remaining > 0 && !lines.isEmpty {
-            let lastIndex = lines.count - 1
-            var line = lines[lastIndex]
-            if line.text.isEmpty {
-                if lines.count > 1 {
-                    lines.removeLast()
-                } else {
-                    break
-                }
-                continue
-            }
-            let toRemove = min(remaining, line.text.count)
-            let endIndex = line.text.index(line.text.endIndex, offsetBy: -toRemove)
-            line.text = String(line.text[..<endIndex])
-            line.updatedAt = date
-            if line.text.isEmpty {
-                line.confidence = -1
-            }
-            lines[lastIndex] = line
-            remaining -= toRemove
-            if line.text.isEmpty && lines.count > 1 {
-                lines.removeLast()
-            }
-        }
-        if lines.isEmpty {
-            startNewLine(at: date)
-        }
-        currentLineId = lines.last?.id
-    }
-
-    private func appendToCurrentLine(_ text: String, at date: Date, confidence: Double) {
-        if currentLineId == nil || !lines.contains(where: { $0.id == currentLineId }) {
-            startNewLine(at: date)
-        }
-        guard let id = currentLineId,
-              let index = lines.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        var line = lines[index]
-        line.text += text
-        line.updatedAt = date
-        if confidence >= 0 {
-            let value = min(max(confidence, 0), 1)
-            line.confidence = value
-        }
-        lines[index] = line
-    }
-
-    private func updateCurrentLineConfidence(_ confidence: Double, at date: Date) {
-        if confidence < 0 {
-            return
-        }
-        guard let id = currentLineId,
-              let index = lines.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        var line = lines[index]
-        let value = min(max(confidence, 0), 1)
-        line.confidence = value
-        line.updatedAt = date
-        lines[index] = line
+    private func syncLines() {
+        lines = store.lines
     }
 
     private func scheduleMaxDuration() {
@@ -450,9 +455,7 @@ final class SpeechCaptureController: ObservableObject {
     }
 
     private func totalCharacterCount() -> Int {
-        lines.reduce(into: 0) { result, line in
-            result += line.text.count
-        }
+        store.lines.reduce(into: 0) { $0 += $1.text.count }
     }
 
     private func exceededSegmentLimit(now: Date) -> Bool {
