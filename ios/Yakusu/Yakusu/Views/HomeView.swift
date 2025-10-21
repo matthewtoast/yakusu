@@ -4,21 +4,16 @@ private struct PulseDots: View {
     @State private var animate = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 6, height: 6)
-                    .scaleEffect(animate ? 1 : 0.4)
-                    .opacity(animate ? 1 : 0.3)
-                    .animation(
-                        .easeInOut(duration: 0.6)
-                            .repeatForever()
-                            .delay(Double(index) * 0.2),
-                        value: animate
-                    )
-            }
-        }
+        Circle()
+            .fill(Color.accentColor)
+            .frame(width: 10, height: 10)
+            .scaleEffect(animate ? 1 : 0.4)
+            .opacity(animate ? 1 : 0.3)
+            .animation(
+                .easeInOut(duration: 0.8)
+                    .repeatForever(autoreverses: true),
+                value: animate
+            )
         .onAppear {
             animate = true
         }
@@ -176,11 +171,13 @@ struct HomeView: View {
                                         Text(displayText(line))
                                             .font(.system(size: 18 * settings.fontScale))
                                             .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(.trailing, 24)
                                         if !translation.isEmpty {
                                             Text(translation)
                                                 .font(.system(size: 17 * settings.fontScale))
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                                 .foregroundColor(.accentColor)
+                                                .padding(.trailing, 24)
                                         }
                                     }
                                     .padding(12)
@@ -189,8 +186,7 @@ struct HomeView: View {
                                     .overlay(alignment: .topTrailing) {
                                         if pending {
                                             PulseDots()
-                                                .frame(width: 20)
-                                                .padding(12)
+                                                .padding(8)
                                         }
                                     }
                                     .id(line.id)
