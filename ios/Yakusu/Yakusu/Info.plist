@@ -11,5 +11,7 @@
 	</array>
 	<key>YakusuAPIBase</key>
 	<string>$(YAKUSU_API_BASE)</string>
+	<key>YakusuAPIProto</key>
+	<string>$(YAKUSU_API_PROTO)</string>
 </dict>
 </plist>

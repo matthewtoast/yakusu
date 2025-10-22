@@ -6,8 +6,14 @@ import { hideBin } from "yargs/helpers";
 import { loadDevEnv } from "../env/env-dev";
 import { loadSstEnv } from "../env/env-sst";
 import { safeConfigValue } from "../lib/DevTools";
-import { cleanSplit } from "../lib/TextHelpers";
+import {
+  cleanSplit,
+  extractNetworkDomainFromSSTString,
+} from "../lib/TextHelpers";
 import { apiFetchDevSessions } from "../lib/WebAPI";
+
+const API_BASE_VAR = "YAKUSU_API_BASE";
+const API_PROTO_VAR = "YAKUSU_API_PROTO";
 
 const sstEnv = loadSstEnv();
 const devEnv = loadDevEnv();
@@ -74,9 +80,21 @@ async function go() {
         ...sstEnv,
       });
       processes.push(next);
-      next.stdout!.on("data", (x: Buffer) => process.stdout.write(x));
+      const env: Record<string, string> = {};
+      next.stdout!.on("data", (x: Buffer) => {
+        const s = x.toString();
+        const urlWithoutScheme = extractNetworkDomainFromSSTString(s);
+        if (urlWithoutScheme) {
+          env[API_BASE_VAR] = `${urlWithoutScheme}`;
+          env[API_PROTO_VAR] = `http`;
+        }
+        return process.stdout.write(x);
+      });
       setTimeout(() => {
-        setupFixtures(onSig);
+        if (!env[API_BASE_VAR] || !env[API_PROTO_VAR]) {
+          throw new Error("API base & proto var must be defined");
+        }
+        setupFixtures(env, onSig);
       }, 10_000);
     }
   });
@@ -102,7 +120,7 @@ async function go() {
 
 go();
 
-async function setupFixtures(err: () => void) {
+async function setupFixtures(env: Record<string, string>, err: () => void) {
   const argv = await yargs(hideBin(process.argv))
     .parserConfiguration({
       "camel-case-expansion": true,
@@ -113,7 +131,7 @@ async function setupFixtures(err: () => void) {
 
   console.info("[dev] Fetching sessions");
   const devSessions = await apiFetchDevSessions(
-    devEnv.YAKUSU_API_BASE,
+    `${devEnv.YAKUSU_API_PROTO}://${devEnv.YAKUSU_API_BASE}`,
     cleanSplit(devEnv.DEV_API_KEYS, ",")
   );
   if (devSessions.length < 1) {
@@ -132,6 +150,9 @@ async function setupFixtures(err: () => void) {
     `DEV_SESSION_USER_EMAIL = ${safeConfigValue(sessionUser.email, "test@aisatsu.co")}`,
     `DEV_SESSION_USER_ROLES = ${safeConfigValue(sessionUser.roles?.join(","), "user")}`,
   ];
+  for (const key in env) {
+    lines.push(`${key} = ${safeConfigValue(env[key], "_")}`);
+  }
   console.info("[dev] iOS vars", lines);
   await writeFile(configPath, lines.join("\n") + "\n", "utf8");
 

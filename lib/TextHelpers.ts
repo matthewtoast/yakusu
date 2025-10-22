@@ -293,3 +293,14 @@ export function mimeTypeFromUrl(url: string): string {
 }
 
 export const AUDIO_MIMES = ["audio/mpeg", "audio/wav", "audio/ogg"];
+
+export const extractNetworkDomainFromSSTString = (s: string): string | null => {
+  const clean = s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+  const m = clean.match(/Network:\s+(https?:\/\/\S+)/i);
+  const mm = m ? m[1].trim() : null;
+  if (!mm) {
+    return null;
+  }
+  const parts = mm.split("//");
+  return parts[1];
+};

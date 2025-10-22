@@ -13,6 +13,7 @@
     "verify": "yarn typecheck && yarn test",
     "dev": "yarn ts ./run/dev.ts",
     "web:dev": "next dev web",
+    "web:deploy": "yarn ts ./run/deploy.ts",
     "ios:sim": "bash -lc 'set -e; DEVICE=\"iPhone 16e\"; open -a Simulator; xcrun simctl boot \"$DEVICE\" || true; xcrun simctl bootstatus \"$DEVICE\" -b; pushd ios/Yakusu >/dev/null; xcodebuild -scheme Yakusu -configuration Debug -destination \"platform=iOS Simulator,name=$DEVICE\" -derivedDataPath .derived build; APP=$(pwd)/.derived/Build/Products/Debug-iphonesimulator/Yakusu.app; BUNDLE_ID=$(/usr/libexec/PlistBuddy -c \"Print :CFBundleIdentifier\" \"$APP/Info.plist\"); popd >/dev/null; xcrun simctl uninstall \"$DEVICE\" \"$BUNDLE_ID\" || true; xcrun simctl install \"$DEVICE\" \"$APP\"; xcrun simctl launch \"$DEVICE\" \"$BUNDLE_ID\"'"
   },
   "devDependencies": {
